@@ -376,21 +376,44 @@
             type: c.CALL_TYPE==1?'Исходящий':c.CALL_TYPE==2?'Входящий':'Внутренний',
             phone: c.PHONE_NUMBER,
             recordUrl: c.RECORD_URL || c.CALL_RECORD_URL || null,
+            recordFileId: c.RECORD_FILE_ID || null,
             crmType: c.CRM_ENTITY_TYPE, crmId: c.CRM_ENTITY_ID
           })));
         } catch(e) { setError(`Ошибка загрузки: ${e.message}`); }
         setLoadingCalls(false);
       }, [dateFrom, dateTo, selEmp, employees]);
 
+      // Get record download URL from RECORD_FILE_ID
+      async function getRecordUrl(fileId) {
+        // Try disk.file.get first
+        try {
+          const r = await bx('disk.file.get', { id: fileId });
+          if (r.result?.DOWNLOAD_URL) return r.result.DOWNLOAD_URL;
+        } catch {}
+        // Try voximplant.statistic.get with record URL request
+        try {
+          const r = await bx('disk.file.getExternalLink', { id: fileId });
+          if (r.result) return r.result;
+        } catch {}
+        // Fallback: direct REST download link
+        return `${BITRIX_BASE}/disk.file.download?id=${fileId}`;
+      }
+
       // Analyze call
       const analyzeCall = useCallback(async (call) => {
         setAnalyzing(call.id); setError(null);
         try {
-          if (!call.recordUrl) throw new Error('Нет аудиозаписи');
+          // Determine record URL
+          let recordUrl = call.recordUrl;
+          if (!recordUrl && call.recordFileId) {
+            setProgress('Получение ссылки на запись...');
+            recordUrl = await getRecordUrl(call.recordFileId);
+          }
+          if (!recordUrl && !call.recordFileId) throw new Error('Нет аудиозаписи');
 
           setProgress('Загрузка записи...');
-          const audioResp = await fetch(call.recordUrl);
-          if (!audioResp.ok) throw new Error('Не удалось скачать запись');
+          const audioResp = await fetch(recordUrl);
+          if (!audioResp.ok) throw new Error(`Не удалось скачать запись (${audioResp.status})`);
           const blob = await audioResp.blob();
           const b64 = await new Promise((res,rej) => {
             const r = new FileReader();
@@ -399,8 +422,10 @@
           });
 
           let mediaType = 'audio/mpeg';
-          if (call.recordUrl.includes('.wav')) mediaType = 'audio/wav';
-          else if (call.recordUrl.includes('.ogg')) mediaType = 'audio/ogg';
+          const ct = blob.type || '';
+          if (ct.includes('wav') || (recordUrl && recordUrl.includes('.wav'))) mediaType = 'audio/wav';
+          else if (ct.includes('ogg') || (recordUrl && recordUrl.includes('.ogg'))) mediaType = 'audio/ogg';
+          else if (ct.includes('mp4') || ct.includes('m4a')) mediaType = 'audio/mp4';
 
           setProgress('Транскрибация...');
           const trRes = await fetch(ANTHROPIC_URL, {
@@ -608,10 +633,10 @@
                               <ScoreBadge score={(typeof existing.result==='string'?JSON.parse(existing.result):existing.result).score} size="sm"/>
                             </div>
                           )}
-                          <button className={`btn ${c.recordUrl?'btn-ghost':'btn-ghost'}`}
-                            onClick={()=>analyzeCall(c)} disabled={busy||!c.recordUrl}
-                            style={{fontSize:12,padding:'7px 14px',opacity:busy?.6:!c.recordUrl?.4:1,cursor:busy||!c.recordUrl?'not-allowed':'pointer'}}>
-                            {busy ? <><div className="spinner" style={{width:12,height:12,borderWidth:2}}/>Анализ...</> : !c.recordUrl ? 'Нет записи' : existing ? '↻' : 'Анализ'}
+                          <button className={`btn btn-ghost`}
+                            onClick={()=>analyzeCall(c)} disabled={busy||(!c.recordUrl && !c.recordFileId)}
+                            style={{fontSize:12,padding:'7px 14px',opacity:busy?.6:(!c.recordUrl && !c.recordFileId)?.4:1,cursor:busy||(!c.recordUrl && !c.recordFileId)?'not-allowed':'pointer'}}>
+                            {busy ? <><div className="spinner" style={{width:12,height:12,borderWidth:2}}/>Анализ...</> : (!c.recordUrl && !c.recordFileId) ? 'Нет записи' : existing ? '↻' : 'Анализ'}
                           </button>
                         </div>
                       </div>
