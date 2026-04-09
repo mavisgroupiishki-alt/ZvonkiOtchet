@@ -1,0 +1,827 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+  <meta name="theme-color" content="#0f172a"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="apple-mobile-web-app-title" content="MAVIS Calls"/>
+  <meta name="description" content="Система анализа качества звонков — МАВИС ГРУПП"/>
+  <title>MAVIS — Анализ звонков</title>
+  <link rel="manifest" href="manifest.json"/>
+  <link rel="icon" href="favicon.ico"/>
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png"/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet"/>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { -webkit-text-size-adjust: 100%; }
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #f1f5f9; color: #0f172a;
+      min-height: 100vh; min-height: 100dvh;
+      overscroll-behavior: none;
+      -webkit-font-smoothing: antialiased;
+    }
+    #root { min-height: 100vh; min-height: 100dvh; }
+    input, select, button, textarea { font-family: inherit; }
+    select, input[type="date"] {
+      padding: 9px 12px; border-radius: 10px; border: 1.5px solid #e2e8f0;
+      font-size: 13px; background: #fff; color: #0f172a; outline: none;
+      transition: border-color .2s;
+    }
+    select:focus, input[type="date"]:focus { border-color: #3b82f6; }
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes slideUp { from { opacity: 0; transform: translateY(30px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes shimmer { 0% { background-position: -400px 0; } 100% { background-position: 400px 0; } }
+    .card { background:#fff; border-radius:14px; border:1.5px solid #e2e8f0; transition: box-shadow .2s; }
+    .card:hover { box-shadow: 0 4px 16px rgba(15,23,42,.06); }
+    .btn {
+      padding: 9px 20px; border-radius: 10px; border: none; cursor: pointer;
+      font-weight: 600; font-size: 13px; transition: all .15s; display: inline-flex;
+      align-items: center; gap: 7px; line-height: 1.4;
+    }
+    .btn-primary { background: #0f172a; color: #fff; }
+    .btn-primary:hover { background: #1e293b; }
+    .btn-primary:disabled { opacity:.5; cursor:not-allowed; }
+    .btn-ghost { background: transparent; color: #64748b; border: 1.5px solid #e2e8f0; }
+    .btn-ghost:hover { background: #f8fafc; border-color: #cbd5e1; }
+    .btn-danger { background: #fff; color: #dc2626; border: 1.5px solid #fecaca; }
+    .btn-danger:hover { background: #fef2f2; }
+    .spinner {
+      width: 16px; height: 16px; border: 2.5px solid currentColor;
+      border-top-color: transparent; border-radius: 50%;
+      animation: spin .7s linear infinite; flex-shrink: 0;
+    }
+    .mono { font-family: 'JetBrains Mono', monospace; }
+
+    /* Install banner */
+    .install-banner {
+      position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+      background: #0f172a; color: #fff; padding: 14px 24px; border-radius: 14px;
+      display: flex; align-items: center; gap: 14px; z-index: 2000;
+      box-shadow: 0 20px 40px rgba(0,0,0,.3); animation: slideUp .4s ease;
+      max-width: calc(100% - 32px);
+    }
+    .install-banner button { white-space: nowrap; }
+
+    /* Mobile nav */
+    @media (max-width: 640px) {
+      .desktop-nav { display: none !important; }
+      .mobile-nav { display: flex !important; }
+      .filters-row { flex-direction: column !important; }
+      .filters-row > div { width: 100% !important; }
+      .filters-row select, .filters-row input { width: 100% !important; }
+      .call-row { flex-direction: column !important; align-items: flex-start !important; gap: 10px !important; }
+      .call-actions { width: 100%; justify-content: flex-end !important; }
+      .criteria-label { width: 120px !important; font-size: 11px !important; }
+      .modal-body { padding: 20px !important; }
+      .summary-grid { grid-template-columns: 1fr !important; }
+      .stat-cards { grid-template-columns: 1fr 1fr !important; }
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <script type="text/babel" data-type="module">
+    const { useState, useEffect, useCallback, useRef } = React;
+
+    // ═══════════════════════════════════════
+    // CONFIG
+    // ═══════════════════════════════════════
+    const BITRIX_BASE = "https://mavisgroup.bitrix24.by/rest/2110/zsq32dmou6qjegmc";
+    const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
+    const MODEL = "claude-sonnet-4-20250514";
+
+    // ═══════════════════════════════════════
+    // SYSTEM PROMPT
+    // ═══════════════════════════════════════
+    const SYSTEM_PROMPT = `Ты — эксперт по оценке качества звонков менеджеров отдела продаж компании «Мавис Групп».
+Ты получаешь транскрибацию телефонного разговора и анализируешь её по восьми критериям.
+
+Важные принципы оценки:
+- Ты НЕ проверяешь дословное следование скрипту. Ты оцениваешь результат, экспертность подачи и соблюдение этапов продаж.
+- Если менеджер донёс нужный смысл своими словами — это засчитывается как выполнение.
+- Идеальный разговор: экспертный, через пользу клиенту, ненавязчивый, но убедительный, с чёткими договорённостями в конце.
+
+Критерии оценки:
+3.1 Качество коммуникации (10%): приветствие, вежливость, слушание, грамотность
+3.2 Установление контакта (15%): ведёт разговор, инициатива, доверие, завершение
+3.3 Выявление потребностей (15%): открытые вопросы, не спешит с презентацией, сроки, ЛПР
+3.4 Презентация (15%): под потребности, язык выгод, пауза-расчёт, объяснение суммы, преимущества
+3.5 Работа с возражениями (15%): слушает, присоединение→аргумент→вопрос, не давит, дата контакта
+3.6 Следующие шаги (15%): КП, защита КП, договор, дата связи, порядок работы
+3.7 Стандарты (10%): этапы по порядку, без запрещённых конструкций, реферальная + Telegram
+3.8 Клиентоориентированность (5%): по имени, эмоции, без давления
+
+По каждому критерию: оценка 0-10, комментарий 1-3 предложения, цитата при нарушении.
+
+Верни СТРОГО JSON (без markdown, без \`\`\`):
+{"score":<балл 0-10>,"funnel":"...","deal_stage":"...","manager":"...","criteria":[{"id":"3.1","name":"Качество коммуникации","weight":10,"score":<0-10>,"comment":"...","quote":""},{"id":"3.2","name":"Установление контакта и управление разговором","weight":15,"score":<0-10>,"comment":"...","quote":""},{"id":"3.3","name":"Выявление потребностей","weight":15,"score":<0-10>,"comment":"...","quote":""},{"id":"3.4","name":"Презентация продукта / услуги","weight":15,"score":<0-10>,"comment":"...","quote":""},{"id":"3.5","name":"Работа с возражениями","weight":15,"score":<0-10>,"comment":"...","quote":""},{"id":"3.6","name":"Продвижение сделки и следующие шаги","weight":15,"score":<0-10>,"comment":"...","quote":""},{"id":"3.7","name":"Соблюдение стандартов и скрипта","weight":10,"score":<0-10>,"comment":"...","quote":""},{"id":"3.8","name":"Клиентоориентированность","weight":5,"score":<0-10>,"comment":"...","quote":""}],"errors":[{"number":1,"criterion":"3.X","description":"...","quote":""}],"improvements":[{"priority":1,"action":"...","expected_result":"..."}],"summary":{"goal_achieved":true,"deal_status":"...","next_step":"...","positive_note":"...","focus_area":"..."}}`;
+
+    // ═══════════════════════════════════════
+    // HELPERS
+    // ═══════════════════════════════════════
+    async function bx(method, params = {}) {
+      const url = new URL(`${BITRIX_BASE}/${method}`);
+      const flat = (obj, prefix = '') => {
+        Object.entries(obj).forEach(([k, v]) => {
+          const key = prefix ? `${prefix}[${k}]` : k;
+          if (v && typeof v === 'object' && !Array.isArray(v)) flat(v, key);
+          else url.searchParams.append(key, v);
+        });
+      };
+      flat(params);
+      const r = await fetch(url.toString());
+      if (!r.ok) throw new Error(`Bitrix ${r.status}`);
+      return r.json();
+    }
+
+    function fmtDur(s) { if(!s)return"0:00"; return `${Math.floor(s/60)}:${(s%60).toString().padStart(2,'0')}`; }
+    function fmtDate(d) { if(!d)return"—"; return new Date(d).toLocaleDateString('ru-RU',{day:'2-digit',month:'2-digit',year:'numeric'}); }
+    function fmtDT(d) { if(!d)return"—"; return new Date(d).toLocaleDateString('ru-RU',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}); }
+    function scoreColor(s) { return s>=8.5?'#16a34a':s>=6.5?'#ca8a04':s>=4?'#ea580c':'#dc2626'; }
+    function scoreLabel(s) { return s>=8.5?'Отлично':s>=6.5?'Хорошо':s>=4?'Удовлетв.':'Плохо'; }
+    function weekNum(d) { const dt=new Date(d); dt.setHours(0,0,0,0); dt.setDate(dt.getDate()+3-((dt.getDay()+6)%7)); const w1=new Date(dt.getFullYear(),0,4); return 1+Math.round(((dt-w1)/864e5-3+((w1.getDay()+6)%7))/7); }
+
+    // Local storage for analyses persistence
+    const LS_KEY = 'mavis_analyses_v1';
+    function loadAnalyses() { try { return JSON.parse(localStorage.getItem(LS_KEY)||'[]'); } catch { return []; } }
+    function saveAnalyses(a) { localStorage.setItem(LS_KEY, JSON.stringify(a)); }
+
+    // ═══════════════════════════════════════
+    // COMPONENTS
+    // ═══════════════════════════════════════
+    function ScoreBadge({score, size='md'}) {
+      const c = scoreColor(score);
+      const s = {sm:{w:34,h:34,f:12},md:{w:46,h:46,f:15},lg:{w:62,h:62,f:21}}[size];
+      return (
+        <div style={{
+          width:s.w,height:s.h,borderRadius:'50%',display:'flex',alignItems:'center',justifyContent:'center',
+          background:c+'14',border:`2.5px solid ${c}`,color:c,fontSize:s.f,fontWeight:700,flexShrink:0
+        }} className="mono">{score?.toFixed(1)??"—"}</div>
+      );
+    }
+
+    function CriteriaBar({criteria}) {
+      return (
+        <div style={{display:'flex',flexDirection:'column',gap:7}}>
+          {criteria.map(c => (
+            <div key={c.id} style={{display:'flex',alignItems:'center',gap:8}}>
+              <div className="criteria-label" style={{width:180,fontSize:11.5,color:'#64748b',flexShrink:0,textAlign:'right',lineHeight:1.3}}>
+                {c.id} {c.name}
+              </div>
+              <div style={{flex:1,height:22,background:'#f1f5f9',borderRadius:6,overflow:'hidden',position:'relative'}}>
+                <div style={{height:'100%',width:`${(c.score/10)*100}%`,background:scoreColor(c.score),borderRadius:6,transition:'width .5s ease'}}/>
+                <span style={{position:'absolute',right:7,top:'50%',transform:'translateY(-50%)',fontSize:11,fontWeight:700,color:'#334155'}} className="mono">{c.score}</span>
+              </div>
+              <div style={{width:36,fontSize:10,color:'#94a3b8',textAlign:'center'}}>{c.weight}%</div>
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    function AnalysisModal({analysis, onClose}) {
+      if(!analysis) return null;
+      const a = typeof analysis.result==='string' ? JSON.parse(analysis.result) : analysis.result;
+      return (
+        <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,.45)',zIndex:1000,display:'flex',alignItems:'center',justifyContent:'center',padding:16,backdropFilter:'blur(4px)'}} onClick={onClose}>
+          <div className="modal-body" style={{background:'#fff',borderRadius:20,maxWidth:880,width:'100%',maxHeight:'92vh',overflow:'auto',padding:32,boxShadow:'0 25px 60px rgba(0,0,0,.2)',animation:'slideUp .3s ease'}} onClick={e=>e.stopPropagation()}>
+            {/* Header */}
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:28,gap:16}}>
+              <div style={{minWidth:0}}>
+                <h2 style={{margin:0,fontSize:19,fontWeight:700,color:'#0f172a'}}>Анализ звонка</h2>
+                <div style={{fontSize:13,color:'#64748b',marginTop:4}}>{analysis.managerName} • {fmtDT(analysis.callDate)} • {fmtDur(analysis.duration)}</div>
+                {a.funnel && <div style={{fontSize:12,color:'#94a3b8',marginTop:2}}>Воронка: {a.funnel} | Стадия: {a.deal_stage}</div>}
+              </div>
+              <div style={{display:'flex',alignItems:'center',gap:14,flexShrink:0}}>
+                <div style={{textAlign:'center'}}>
+                  <ScoreBadge score={a.score} size="lg"/>
+                  <div style={{fontSize:11,color:scoreColor(a.score),fontWeight:700,marginTop:4}}>{scoreLabel(a.score)}</div>
+                </div>
+                <button onClick={onClose} style={{background:'none',border:'none',fontSize:22,cursor:'pointer',color:'#94a3b8',padding:4}}>✕</button>
+              </div>
+            </div>
+
+            {/* Criteria bars */}
+            <div style={{marginBottom:28}}>
+              <h3 style={{fontSize:14,color:'#334155',marginBottom:12,fontWeight:700}}>Оценки по критериям</h3>
+              <CriteriaBar criteria={a.criteria}/>
+            </div>
+
+            {/* Criteria details */}
+            <div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:28}}>
+              {a.criteria.map(c => (
+                <div key={c.id} style={{background:'#f8fafc',borderRadius:12,padding:'12px 16px',border:'1px solid #e2e8f0'}}>
+                  <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
+                    <span style={{fontWeight:600,fontSize:13,color:'#1e293b'}}>{c.id} {c.name}</span>
+                    <span style={{fontWeight:700,fontSize:13,color:scoreColor(c.score)}} className="mono">{c.score}/10</span>
+                  </div>
+                  <p style={{margin:0,fontSize:13,color:'#475569',lineHeight:1.6}}>{c.comment}</p>
+                  {c.quote && <p style={{margin:'6px 0 0',fontSize:12,color:'#dc2626',fontStyle:'italic',borderLeft:'3px solid #fca5a5',padding:'6px 12px',background:'#fef2f2',borderRadius:'0 8px 8px 0'}}>«{c.quote}»</p>}
+                </div>
+              ))}
+            </div>
+
+            {/* Errors */}
+            {a.errors?.length > 0 && (
+              <div style={{marginBottom:28}}>
+                <h3 style={{fontSize:14,color:'#dc2626',marginBottom:10,fontWeight:700}}>⚠ Ошибки ({a.errors.length})</h3>
+                <div style={{display:'flex',flexDirection:'column',gap:6}}>
+                  {a.errors.map((e,i)=>(
+                    <div key={i} style={{background:'#fef2f2',borderRadius:10,padding:'10px 14px',border:'1px solid #fecaca'}}>
+                      <div style={{fontWeight:600,fontSize:13,color:'#991b1b',marginBottom:3}}>
+                        {e.number}. {e.description} <span style={{color:'#94a3b8',fontWeight:400}}>(кр. {e.criterion})</span>
+                      </div>
+                      {e.quote && <p style={{margin:0,fontSize:12,color:'#b91c1c',fontStyle:'italic'}}>«{e.quote}»</p>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Improvements */}
+            {a.improvements?.length > 0 && (
+              <div style={{marginBottom:28}}>
+                <h3 style={{fontSize:14,color:'#0369a1',marginBottom:10,fontWeight:700}}>💡 Рекомендации</h3>
+                <div style={{display:'flex',flexDirection:'column',gap:6}}>
+                  {a.improvements.map((imp,i)=>(
+                    <div key={i} style={{background:'#f0f9ff',borderRadius:10,padding:'10px 14px',border:'1px solid #bae6fd'}}>
+                      <div style={{fontWeight:600,fontSize:13,color:'#0c4a6e'}}>#{imp.priority}. {imp.action}</div>
+                      <div style={{fontSize:12,color:'#0369a1',marginTop:2}}>→ {imp.expected_result}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Summary */}
+            {a.summary && (
+              <div style={{background:'#f0fdf4',borderRadius:14,padding:20,border:'1px solid #bbf7d0'}}>
+                <h3 style={{fontSize:14,color:'#166534',marginBottom:10,fontWeight:700}}>📋 Итог</h3>
+                <div className="summary-grid" style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'6px 20px',fontSize:13}}>
+                  <div><span style={{color:'#64748b'}}>Цель:</span> <strong style={{color:a.summary.goal_achieved?'#16a34a':'#dc2626'}}>{a.summary.goal_achieved?'Достигнута':'Не достигнута'}</strong></div>
+                  <div><span style={{color:'#64748b'}}>Статус:</span> <strong>{a.summary.deal_status}</strong></div>
+                  <div style={{gridColumn:'1/-1'}}><span style={{color:'#64748b'}}>След. шаг:</span> <strong>{a.summary.next_step}</strong></div>
+                  {a.summary.positive_note && <div style={{gridColumn:'1/-1'}}><span style={{color:'#64748b'}}>✓</span> <span style={{color:'#166534'}}>{a.summary.positive_note}</span></div>}
+                  {a.summary.focus_area && <div style={{gridColumn:'1/-1'}}><span style={{color:'#64748b'}}>◎</span> <span style={{color:'#b45309'}}>{a.summary.focus_area}</span></div>}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // ═══════════════════════════════════════
+    // MAIN APP
+    // ═══════════════════════════════════════
+    function App() {
+      const [tab, setTab] = useState('calls');
+      const [employees, setEmployees] = useState([]);
+      const [funnels, setFunnels] = useState([]);
+      const [calls, setCalls] = useState([]);
+      const [analyses, setAnalyses] = useState(() => loadAnalyses());
+      const [loadingCalls, setLoadingCalls] = useState(false);
+      const [error, setError] = useState(null);
+      const [selEmp, setSelEmp] = useState('all');
+      const [dateFrom, setDateFrom] = useState(() => { const d=new Date(); d.setDate(d.getDate()-7); return d.toISOString().slice(0,10); });
+      const [dateTo, setDateTo] = useState(() => new Date().toISOString().slice(0,10));
+      const [period, setPeriod] = useState('week');
+      const [analyzing, setAnalyzing] = useState(null);
+      const [selAnalysis, setSelAnalysis] = useState(null);
+      const [initDone, setInitDone] = useState(false);
+      const [progress, setProgress] = useState('');
+      const [installPrompt, setInstallPrompt] = useState(null);
+      const [showInstall, setShowInstall] = useState(false);
+
+      // PWA install prompt
+      useEffect(() => {
+        const handler = e => { e.preventDefault(); setInstallPrompt(e); setShowInstall(true); };
+        window.addEventListener('beforeinstallprompt', handler);
+        return () => window.removeEventListener('beforeinstallprompt', handler);
+      }, []);
+
+      const doInstall = async () => {
+        if (!installPrompt) return;
+        installPrompt.prompt();
+        const result = await installPrompt.userChoice;
+        if (result.outcome === 'accepted') setShowInstall(false);
+        setInstallPrompt(null);
+      };
+
+      // Save analyses
+      useEffect(() => { saveAnalyses(analyses); }, [analyses]);
+
+      // Init: load employees & funnels
+      useEffect(() => {
+        (async () => {
+          try {
+            setProgress('Загрузка сотрудников...');
+            const empRes = await bx('user.get', { FILTER: { ACTIVE: 'true' }, start: 0 });
+            const emps = (empRes.result||[]).map(u => ({
+              id: u.ID, name: `${u.LAST_NAME||''} ${u.NAME||''}`.trim(), photo: u.PERSONAL_PHOTO
+            })).filter(e => e.name);
+            setEmployees(emps);
+
+            setProgress('Загрузка воронок...');
+            try {
+              const catRes = await bx('crm.dealcategory.list');
+              const cats = [{ ID:'0', NAME:'Общая' }, ...(catRes.result||[])];
+              const fd = [];
+              for (const cat of cats.slice(0,5)) {
+                try {
+                  const sr = await bx('crm.dealcategory.stage.list', { id: cat.ID });
+                  fd.push({ id:cat.ID, name:cat.NAME, stages:(sr.result||[]).map(s=>({id:s.STATUS_ID,name:s.NAME})) });
+                } catch { fd.push({ id:cat.ID, name:cat.NAME, stages:[] }); }
+              }
+              setFunnels(fd);
+            } catch { setFunnels([{id:'0',name:'Общая',stages:[]}]); }
+
+            setProgress('');
+            setInitDone(true);
+          } catch(e) {
+            setError(`Ошибка подключения к Bitrix24: ${e.message}`);
+            setInitDone(true);
+            setProgress('');
+          }
+        })();
+      }, []);
+
+      // Load calls
+      const loadCalls = useCallback(async () => {
+        setLoadingCalls(true); setError(null);
+        try {
+          const params = {
+            FILTER: { '>CALL_START_DATE': `${dateFrom}T00:00:00`, '<CALL_START_DATE': `${dateTo}T23:59:59` },
+            SORT: 'CALL_START_DATE', ORDER: 'DESC', LIMIT: 50
+          };
+          if (selEmp !== 'all') params.FILTER.PORTAL_USER_ID = selEmp;
+          const res = await bx('voximplant.statistic.get', params);
+          setCalls((res.result||[]).map(c => ({
+            id: c.ID, callId: c.CALL_ID, date: c.CALL_START_DATE,
+            duration: parseInt(c.CALL_DURATION)||0,
+            empId: c.PORTAL_USER_ID,
+            empName: employees.find(e => e.id===c.PORTAL_USER_ID)?.name || `#${c.PORTAL_USER_ID}`,
+            type: c.CALL_TYPE==1?'Исходящий':c.CALL_TYPE==2?'Входящий':'Внутренний',
+            phone: c.PHONE_NUMBER,
+            recordUrl: c.RECORD_URL || c.CALL_RECORD_URL || null,
+            crmType: c.CRM_ENTITY_TYPE, crmId: c.CRM_ENTITY_ID
+          })));
+        } catch(e) { setError(`Ошибка загрузки: ${e.message}`); }
+        setLoadingCalls(false);
+      }, [dateFrom, dateTo, selEmp, employees]);
+
+      // Analyze call
+      const analyzeCall = useCallback(async (call) => {
+        setAnalyzing(call.id); setError(null);
+        try {
+          if (!call.recordUrl) throw new Error('Нет аудиозаписи');
+
+          setProgress('Загрузка записи...');
+          const audioResp = await fetch(call.recordUrl);
+          if (!audioResp.ok) throw new Error('Не удалось скачать запись');
+          const blob = await audioResp.blob();
+          const b64 = await new Promise((res,rej) => {
+            const r = new FileReader();
+            r.onload = () => res(r.result.split(',')[1]);
+            r.onerror = rej; r.readAsDataURL(blob);
+          });
+
+          let mediaType = 'audio/mpeg';
+          if (call.recordUrl.includes('.wav')) mediaType = 'audio/wav';
+          else if (call.recordUrl.includes('.ogg')) mediaType = 'audio/ogg';
+
+          setProgress('Транскрибация...');
+          const trRes = await fetch(ANTHROPIC_URL, {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({
+              model: MODEL, max_tokens: 8000,
+              messages: [{role:'user', content:[
+                {type:'document', source:{type:'base64', media_type:mediaType, data:b64}},
+                {type:'text', text:'Транскрибируй этот телефонный звонок. Формат:\nМенеджер: ...\nКлиент: ...\nТочно передай содержание.'}
+              ]}]
+            })
+          });
+          const trData = await trRes.json();
+          const transcription = trData.content?.map(c=>c.text||'').join('\n') || '';
+          if (transcription.length < 50) throw new Error('Не удалось транскрибировать аудио');
+
+          // Get CRM context
+          let funnelName = 'Не определена', dealStage = 'Не определена';
+          if (call.crmType === 'DEAL' && call.crmId) {
+            try {
+              const dr = await bx('crm.deal.get', { id: call.crmId });
+              if (dr.result) {
+                const catId = dr.result.CATEGORY_ID || '0';
+                const f = funnels.find(f => f.id === catId);
+                funnelName = f?.name || `#${catId}`;
+                const st = f?.stages?.find(s => s.id === dr.result.STAGE_ID);
+                dealStage = st?.name || dr.result.STAGE_ID || 'Не определена';
+              }
+            } catch {}
+          }
+
+          setProgress('Анализ по критериям...');
+          const anRes = await fetch(ANTHROPIC_URL, {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({
+              model: MODEL, max_tokens: 4000, system: SYSTEM_PROMPT,
+              messages: [{role:'user', content:`Проанализируй транскрибацию звонка.\nВоронка: ${funnelName}\nСтадия: ${dealStage}\nДата: ${fmtDT(call.date)}\nМенеджер: ${call.empName}\n\n---\n${transcription}\n---`}]
+            })
+          });
+          const anData = await anRes.json();
+          const anText = anData.content?.map(c=>c.text||'').join('') || '';
+
+          let parsed;
+          try {
+            const m = anText.match(/\{[\s\S]*\}/);
+            parsed = JSON.parse(m ? m[0] : anText);
+          } catch { throw new Error('Не удалось разобрать ответ AI'); }
+
+          const newA = {
+            id: `${call.id}_${Date.now()}`, callId: call.id, callDate: call.date,
+            duration: call.duration, managerId: call.empId, managerName: call.empName,
+            phone: call.phone, type: call.type, funnel: funnelName, dealStage,
+            transcription, result: parsed, analyzedAt: new Date().toISOString()
+          };
+          setAnalyses(prev => [newA, ...prev]);
+        } catch(e) { setError(e.message); }
+        setProgress(''); setAnalyzing(null);
+      }, [funnels]);
+
+      // Report helpers
+      const getFiltered = () => analyses.filter(a => {
+        if (selEmp!=='all' && a.managerId!==selEmp) return false;
+        const d = new Date(a.callDate);
+        return d >= new Date(dateFrom) && d <= new Date(dateTo+'T23:59:59');
+      });
+
+      const getGroups = (filtered) => {
+        const g = {};
+        filtered.forEach(a => {
+          const d = new Date(a.callDate);
+          const key = period==='day' ? fmtDate(a.callDate) : period==='week' ? `Нед. ${weekNum(d)}, ${d.getFullYear()}` : d.toLocaleDateString('ru-RU',{month:'long',year:'numeric'});
+          (g[key] = g[key]||[]).push(a);
+        });
+        return g;
+      };
+
+      const getMgrStats = (filtered) => {
+        const s = {};
+        filtered.forEach(a => {
+          const r = typeof a.result==='string' ? JSON.parse(a.result) : a.result;
+          if (!s[a.managerId]) s[a.managerId] = { name:a.managerName, total:0, count:0, crit:{} };
+          s[a.managerId].total += r.score;
+          s[a.managerId].count += 1;
+          r.criteria.forEach(c => {
+            if (!s[a.managerId].crit[c.id]) s[a.managerId].crit[c.id] = { name:c.name, t:0, n:0 };
+            s[a.managerId].crit[c.id].t += c.score;
+            s[a.managerId].crit[c.id].n += 1;
+          });
+        });
+        return s;
+      };
+
+      // ── Loading screen ──
+      if (!initDone) {
+        return (
+          <div style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',background:'linear-gradient(145deg,#0f172a,#1e3a5f)',flexDirection:'column',gap:16}}>
+            <div style={{width:56,height:56,borderRadius:16,background:'linear-gradient(135deg,#38bdf8,#818cf8)',display:'flex',alignItems:'center',justifyContent:'center'}}>
+              <span style={{color:'#fff',fontWeight:800,fontSize:26}}>M</span>
+            </div>
+            <div style={{color:'#fff',fontWeight:700,fontSize:18,letterSpacing:'-.02em'}}>MAVIS ГРУПП</div>
+            <div style={{color:'#94a3b8',fontSize:13}}>{progress || 'Подключение...'}</div>
+            <div style={{width:180,height:3,background:'#334155',borderRadius:2,overflow:'hidden',marginTop:4}}>
+              <div style={{height:'100%',width:'60%',background:'linear-gradient(90deg,#38bdf8,#818cf8)',borderRadius:2,animation:'shimmer 1.5s infinite',backgroundSize:'400px 100%'}}/>
+            </div>
+          </div>
+        );
+      }
+
+      const navBtn = (id, icon, label) => (
+        <button key={id} onClick={() => setTab(id)} style={{
+          padding:'10px 18px',border:'none',cursor:'pointer',fontSize:13,fontWeight:600,
+          borderRadius:10,transition:'all .15s',
+          background:tab===id?'#0f172a':'transparent',
+          color:tab===id?'#fff':'#64748b'
+        }}>{icon} {label}</button>
+      );
+
+      const mobileNavBtn = (id, icon, label) => (
+        <button key={id} onClick={() => setTab(id)} style={{
+          flex:1,padding:'10px 0',border:'none',cursor:'pointer',fontSize:11,fontWeight:600,
+          display:'flex',flexDirection:'column',alignItems:'center',gap:2,
+          background:'transparent',color:tab===id?'#0f172a':'#94a3b8',
+          borderTop:tab===id?'2px solid #0f172a':'2px solid transparent'
+        }}>
+          <span style={{fontSize:20}}>{icon}</span>{label}
+        </button>
+      );
+
+      return (
+        <div style={{minHeight:'100vh',paddingBottom:70}}>
+          {/* Header */}
+          <div style={{background:'#fff',borderBottom:'1px solid #e2e8f0',padding:'14px 20px',display:'flex',alignItems:'center',justifyContent:'space-between',position:'sticky',top:0,zIndex:100}}>
+            <div style={{display:'flex',alignItems:'center',gap:12}}>
+              <div style={{width:36,height:36,borderRadius:10,background:'linear-gradient(135deg,#0f172a,#1e3a5f)',display:'flex',alignItems:'center',justifyContent:'center',color:'#fff',fontWeight:800,fontSize:15}}>M</div>
+              <div>
+                <div style={{fontWeight:700,fontSize:15,color:'#0f172a',letterSpacing:'-.02em'}}>Анализ звонков</div>
+                <div style={{fontSize:11,color:'#94a3b8'}}>МАВИС ГРУПП</div>
+              </div>
+            </div>
+            <div className="desktop-nav" style={{display:'flex',gap:3,background:'#f1f5f9',borderRadius:12,padding:3}}>
+              {navBtn('calls','📞','Звонки')}
+              {navBtn('reports','📊','Отчёты')}
+              {navBtn('history','📋','История')}
+            </div>
+          </div>
+
+          <div style={{padding:'16px 16px 0',maxWidth:1100,margin:'0 auto'}}>
+            {/* Errors & progress */}
+            {error && (
+              <div style={{background:'#fef2f2',border:'1.5px solid #fecaca',borderRadius:12,padding:'11px 16px',marginBottom:14,display:'flex',justifyContent:'space-between',alignItems:'center',animation:'fadeIn .3s'}}>
+                <span style={{fontSize:13,color:'#dc2626'}}>⚠ {error}</span>
+                <button onClick={()=>setError(null)} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',fontSize:16,padding:2}}>✕</button>
+              </div>
+            )}
+            {progress && (
+              <div style={{background:'#eff6ff',border:'1.5px solid #bfdbfe',borderRadius:12,padding:'11px 16px',marginBottom:14,display:'flex',alignItems:'center',gap:10,animation:'fadeIn .3s'}}>
+                <div className="spinner" style={{color:'#3b82f6',width:14,height:14,borderWidth:2}}/>
+                <span style={{fontSize:13,color:'#1d4ed8'}}>{progress}</span>
+              </div>
+            )}
+
+            {/* ═══ CALLS ═══ */}
+            {tab==='calls' && (<>
+              <div className="card filters-row" style={{padding:18,marginBottom:16,display:'flex',gap:14,flexWrap:'wrap',alignItems:'flex-end'}}>
+                <div style={{display:'flex',flexDirection:'column',gap:4,minWidth:160}}>
+                  <label style={{fontSize:11,fontWeight:600,color:'#64748b',textTransform:'uppercase',letterSpacing:'.04em'}}>Сотрудник</label>
+                  <select value={selEmp} onChange={e=>setSelEmp(e.target.value)}>
+                    <option value="all">Все</option>
+                    {employees.map(e=><option key={e.id} value={e.id}>{e.name}</option>)}
+                  </select>
+                </div>
+                <div style={{display:'flex',flexDirection:'column',gap:4}}>
+                  <label style={{fontSize:11,fontWeight:600,color:'#64748b',textTransform:'uppercase',letterSpacing:'.04em'}}>С</label>
+                  <input type="date" value={dateFrom} onChange={e=>setDateFrom(e.target.value)}/>
+                </div>
+                <div style={{display:'flex',flexDirection:'column',gap:4}}>
+                  <label style={{fontSize:11,fontWeight:600,color:'#64748b',textTransform:'uppercase',letterSpacing:'.04em'}}>По</label>
+                  <input type="date" value={dateTo} onChange={e=>setDateTo(e.target.value)}/>
+                </div>
+                <button className="btn btn-primary" onClick={loadCalls} disabled={loadingCalls}>
+                  {loadingCalls ? <><div className="spinner" style={{width:14,height:14,borderWidth:2,color:'#fff'}}/>Загрузка...</> : 'Загрузить'}
+                </button>
+              </div>
+
+              {calls.length > 0 ? (
+                <div style={{display:'flex',flexDirection:'column',gap:6}}>
+                  <div style={{fontSize:12,color:'#64748b',marginBottom:2,paddingLeft:4}}>Звонков: {calls.length}</div>
+                  {calls.map(c => {
+                    const existing = analyses.find(a => a.callId === c.id);
+                    const busy = analyzing === c.id;
+                    return (
+                      <div key={c.id} className="card call-row" style={{padding:'14px 18px',display:'flex',alignItems:'center',justifyContent:'space-between',gap:14,animation:'fadeIn .3s'}}>
+                        <div style={{display:'flex',alignItems:'center',gap:12,flex:1,minWidth:0}}>
+                          <div style={{width:40,height:40,borderRadius:10,background:c.type==='Входящий'?'#dbeafe':'#dcfce7',display:'flex',alignItems:'center',justifyContent:'center',fontSize:17,flexShrink:0}}>
+                            {c.type==='Входящий'?'📥':'📤'}
+                          </div>
+                          <div style={{minWidth:0}}>
+                            <div style={{fontWeight:600,fontSize:13.5,color:'#0f172a',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{c.empName}</div>
+                            <div style={{fontSize:11.5,color:'#64748b',marginTop:1}}>{fmtDT(c.date)} • {c.type} • {fmtDur(c.duration)}{c.phone ? ` • ${c.phone}`:''}</div>
+                          </div>
+                        </div>
+                        <div className="call-actions" style={{display:'flex',alignItems:'center',gap:8,flexShrink:0}}>
+                          {existing && (
+                            <div style={{display:'flex',alignItems:'center',gap:6,cursor:'pointer'}} onClick={()=>setSelAnalysis(existing)}>
+                              <ScoreBadge score={(typeof existing.result==='string'?JSON.parse(existing.result):existing.result).score} size="sm"/>
+                            </div>
+                          )}
+                          <button className={`btn ${c.recordUrl?'btn-ghost':'btn-ghost'}`}
+                            onClick={()=>analyzeCall(c)} disabled={busy||!c.recordUrl}
+                            style={{fontSize:12,padding:'7px 14px',opacity:busy?.6:!c.recordUrl?.4:1,cursor:busy||!c.recordUrl?'not-allowed':'pointer'}}>
+                            {busy ? <><div className="spinner" style={{width:12,height:12,borderWidth:2}}/>Анализ...</> : !c.recordUrl ? 'Нет записи' : existing ? '↻' : 'Анализ'}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : !loadingCalls && (
+                <div style={{textAlign:'center',padding:'60px 20px',color:'#94a3b8'}}>
+                  <div style={{fontSize:44,marginBottom:10}}>📞</div>
+                  <div style={{fontSize:15,fontWeight:600,color:'#64748b'}}>Загрузите звонки</div>
+                  <div style={{fontSize:13,marginTop:4}}>Выберите период и нажмите «Загрузить»</div>
+                </div>
+              )}
+            </>)}
+
+            {/* ═══ REPORTS ═══ */}
+            {tab==='reports' && (()=>{
+              const filtered = getFiltered();
+              const groups = getGroups(filtered);
+              const mgrStats = getMgrStats(filtered);
+              const avgAll = filtered.length ? filtered.reduce((s,a)=>{const r=typeof a.result==='string'?JSON.parse(a.result):a.result;return s+r.score;},0)/filtered.length : 0;
+
+              return (<>
+                <div className="card filters-row" style={{padding:18,marginBottom:16,display:'flex',gap:14,flexWrap:'wrap',alignItems:'flex-end'}}>
+                  <div style={{display:'flex',flexDirection:'column',gap:4}}>
+                    <label style={{fontSize:11,fontWeight:600,color:'#64748b',textTransform:'uppercase',letterSpacing:'.04em'}}>Группировка</label>
+                    <select value={period} onChange={e=>setPeriod(e.target.value)}>
+                      <option value="day">По дням</option>
+                      <option value="week">По неделям</option>
+                      <option value="month">По месяцам</option>
+                    </select>
+                  </div>
+                  <div style={{display:'flex',flexDirection:'column',gap:4,minWidth:160}}>
+                    <label style={{fontSize:11,fontWeight:600,color:'#64748b',textTransform:'uppercase',letterSpacing:'.04em'}}>Сотрудник</label>
+                    <select value={selEmp} onChange={e=>setSelEmp(e.target.value)}>
+                      <option value="all">Все</option>
+                      {employees.map(e=><option key={e.id} value={e.id}>{e.name}</option>)}
+                    </select>
+                  </div>
+                  <div style={{display:'flex',flexDirection:'column',gap:4}}>
+                    <label style={{fontSize:11,fontWeight:600,color:'#64748b',textTransform:'uppercase',letterSpacing:'.04em'}}>С</label>
+                    <input type="date" value={dateFrom} onChange={e=>setDateFrom(e.target.value)}/>
+                  </div>
+                  <div style={{display:'flex',flexDirection:'column',gap:4}}>
+                    <label style={{fontSize:11,fontWeight:600,color:'#64748b',textTransform:'uppercase',letterSpacing:'.04em'}}>По</label>
+                    <input type="date" value={dateTo} onChange={e=>setDateTo(e.target.value)}/>
+                  </div>
+                </div>
+
+                {!filtered.length ? (
+                  <div style={{textAlign:'center',padding:'60px 20px',color:'#94a3b8'}}>
+                    <div style={{fontSize:44,marginBottom:10}}>📊</div>
+                    <div style={{fontSize:15,fontWeight:600,color:'#64748b'}}>Нет данных</div>
+                    <div style={{fontSize:13,marginTop:4}}>Сначала проанализируйте звонки</div>
+                  </div>
+                ) : (<>
+                  {/* Stats cards */}
+                  <div className="stat-cards" style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))',gap:10,marginBottom:20}}>
+                    {[
+                      {label:'Анализов',val:filtered.length,color:'#0f172a'},
+                      {label:'Средний балл',val:avgAll.toFixed(1),color:scoreColor(avgAll)},
+                      {label:'Отлично ≥8.5',val:filtered.filter(a=>(typeof a.result==='string'?JSON.parse(a.result):a.result).score>=8.5).length,color:'#16a34a'},
+                      {label:'Внимание <6.5',val:filtered.filter(a=>(typeof a.result==='string'?JSON.parse(a.result):a.result).score<6.5).length,color:'#dc2626'},
+                    ].map(({label,val,color})=>(
+                      <div key={label} className="card" style={{padding:'16px 18px'}}>
+                        <div style={{fontSize:11,color:'#64748b',fontWeight:600,marginBottom:6,textTransform:'uppercase',letterSpacing:'.04em'}}>{label}</div>
+                        <div className="mono" style={{fontSize:28,fontWeight:700,color}}>{val}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Manager table */}
+                  <div className="card" style={{padding:22,marginBottom:20}}>
+                    <h3 style={{margin:'0 0 14px',fontSize:15,fontWeight:700}}>По сотрудникам</h3>
+                    {Object.entries(mgrStats).sort(([,a],[,b])=>(b.total/b.count)-(a.total/a.count)).map(([id,st])=>{
+                      const avg = st.total/st.count;
+                      return (
+                        <div key={id} style={{display:'flex',alignItems:'center',gap:14,padding:'10px 12px',background:'#f8fafc',borderRadius:10,marginBottom:6,border:'1px solid #e2e8f0'}}>
+                          <ScoreBadge score={avg}/>
+                          <div style={{flex:1,minWidth:0}}>
+                            <div style={{fontWeight:600,fontSize:13.5}}>{st.name}</div>
+                            <div style={{fontSize:11.5,color:'#64748b',marginTop:1}}>{st.count} анал. • {avg.toFixed(1)} — {scoreLabel(avg)}</div>
+                          </div>
+                          <div style={{display:'flex',gap:3,flexWrap:'wrap',justifyContent:'flex-end'}}>
+                            {Object.entries(st.crit).map(([cid,cs])=>{
+                              const ca=cs.t/cs.n;
+                              return <div key={cid} style={{padding:'2px 6px',borderRadius:5,fontSize:9.5,fontWeight:600,background:scoreColor(ca)+'14',color:scoreColor(ca),whiteSpace:'nowrap'}}>{cid}:{ca.toFixed(1)}</div>;
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Grouped */}
+                  <div className="card" style={{padding:22}}>
+                    <h3 style={{margin:'0 0 14px',fontSize:15,fontWeight:700}}>
+                      {period==='day'?'По дням':period==='week'?'По неделям':'По месяцам'}
+                    </h3>
+                    {Object.entries(groups).map(([per,items])=>{
+                      const avgS = items.reduce((s,a)=>{const r=typeof a.result==='string'?JSON.parse(a.result):a.result;return s+r.score;},0)/items.length;
+                      return (
+                        <div key={per} style={{marginBottom:16}}>
+                          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 12px',background:'#f1f5f9',borderRadius:8,marginBottom:6}}>
+                            <span style={{fontWeight:600,fontSize:13,color:'#334155'}}>{per}</span>
+                            <span className="mono" style={{fontSize:12,color:scoreColor(avgS),fontWeight:700}}>⌀ {avgS.toFixed(1)} • {items.length} зв.</span>
+                          </div>
+                          {items.map(a=>{
+                            const r = typeof a.result==='string'?JSON.parse(a.result):a.result;
+                            return (
+                              <div key={a.id} style={{display:'flex',alignItems:'center',gap:10,padding:'7px 12px',borderBottom:'1px solid #f1f5f9',cursor:'pointer'}} onClick={()=>setSelAnalysis(a)}>
+                                <ScoreBadge score={r.score} size="sm"/>
+                                <div style={{flex:1,minWidth:0}}>
+                                  <span style={{fontSize:12.5,fontWeight:500}}>{a.managerName}</span>
+                                  <span style={{fontSize:11,color:'#94a3b8',marginLeft:6}}>{fmtDT(a.callDate)} • {fmtDur(a.duration)}</span>
+                                </div>
+                                <span style={{fontSize:12,color:'#94a3b8'}}>→</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>)}
+              </>);
+            })()}
+
+            {/* ═══ HISTORY ═══ */}
+            {tab==='history' && (<>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+                <h3 style={{margin:0,fontSize:15,fontWeight:700}}>Все анализы ({analyses.length})</h3>
+                {analyses.length > 0 && (
+                  <button className="btn btn-danger" style={{fontSize:12,padding:'6px 12px'}} onClick={()=>{
+                    if(confirm('Очистить историю?')) { setAnalyses([]); localStorage.removeItem(LS_KEY); }
+                  }}>Очистить</button>
+                )}
+              </div>
+              {!analyses.length ? (
+                <div style={{textAlign:'center',padding:'60px 20px',color:'#94a3b8'}}>
+                  <div style={{fontSize:44,marginBottom:10}}>📋</div>
+                  <div style={{fontSize:15,fontWeight:600,color:'#64748b'}}>Пусто</div>
+                </div>
+              ) : (
+                <div style={{display:'flex',flexDirection:'column',gap:6}}>
+                  {analyses.map(a=>{
+                    const r = typeof a.result==='string'?JSON.parse(a.result):a.result;
+                    return (
+                      <div key={a.id} className="card" style={{padding:'13px 18px',display:'flex',alignItems:'center',gap:12,cursor:'pointer',animation:'fadeIn .3s'}} onClick={()=>setSelAnalysis(a)}>
+                        <ScoreBadge score={r.score}/>
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{fontWeight:600,fontSize:13.5,color:'#0f172a'}}>{a.managerName}</div>
+                          <div style={{fontSize:11.5,color:'#64748b',marginTop:1}}>
+                            {fmtDT(a.callDate)} • {a.type} • {fmtDur(a.duration)}
+                            {a.funnel!=='Не определена' ? ` • ${a.funnel}` : ''}
+                          </div>
+                        </div>
+                        <div style={{textAlign:'right',flexShrink:0}}>
+                          <div style={{fontSize:11,fontWeight:700,color:scoreColor(r.score)}}>{scoreLabel(r.score)}</div>
+                          <div style={{fontSize:10.5,color:'#94a3b8',marginTop:1}}>{r.errors?.length||0} ош. • {r.improvements?.length||0} рек.</div>
+                        </div>
+                        <span style={{color:'#cbd5e1',fontSize:14}}>›</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </>)}
+          </div>
+
+          {/* Mobile bottom nav */}
+          <div className="mobile-nav" style={{
+            display:'none', position:'fixed',bottom:0,left:0,right:0,background:'#fff',
+            borderTop:'1px solid #e2e8f0',zIndex:100,paddingBottom:'env(safe-area-inset-bottom)'
+          }}>
+            {mobileNavBtn('calls','📞','Звонки')}
+            {mobileNavBtn('reports','📊','Отчёты')}
+            {mobileNavBtn('history','📋','История')}
+          </div>
+
+          {/* Install banner */}
+          {showInstall && (
+            <div className="install-banner">
+              <div style={{flex:1}}>
+                <div style={{fontWeight:600,fontSize:14}}>Установить приложение</div>
+                <div style={{fontSize:12,color:'#94a3b8',marginTop:2}}>Добавьте на рабочий стол для быстрого доступа</div>
+              </div>
+              <button className="btn" style={{background:'#3b82f6',color:'#fff',padding:'8px 16px'}} onClick={doInstall}>Установить</button>
+              <button style={{background:'none',border:'none',color:'#64748b',cursor:'pointer',fontSize:18,padding:4}} onClick={()=>setShowInstall(false)}>✕</button>
+            </div>
+          )}
+
+          {/* Modal */}
+          {selAnalysis && <AnalysisModal analysis={selAnalysis} onClose={()=>setSelAnalysis(null)}/>}
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+  </script>
+
+  <script>
+    // Register Service Worker
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js')
+          .then(reg => console.log('SW registered:', reg.scope))
+          .catch(err => console.log('SW registration failed:', err));
+      });
+    }
+  </script>
+</body>
+</html>
