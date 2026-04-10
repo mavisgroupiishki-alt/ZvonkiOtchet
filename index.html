@@ -102,6 +102,7 @@
     const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
     const OPENROUTER_KEY = "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";
     const AI_MODEL = "deepseek/deepseek-chat-v3-0324:free";
+    const GROQ_KEY = "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";
 
     // ═══════════════════════════════════════
     // SYSTEM PROMPT
@@ -328,51 +329,35 @@
         return data.choices?.[0]?.message?.content || '';
       }
 
-      // Transcribe audio via OpenRouter (supports audio input)
+      // Transcribe audio via Groq Whisper (free, fast, supports Russian)
       async function transcribeAudio(audioBase64, mimeType) {
-        // Map mime types to OpenRouter format names
-        const formatMap = {'audio/mpeg':'mp3','audio/wav':'wav','audio/ogg':'ogg','audio/flac':'flac','audio/mp4':'mp4'};
-        const format = formatMap[mimeType] || 'mp3';
+        // Convert base64 to blob for FormData
+        const byteChars = atob(audioBase64);
+        const byteArr = new Uint8Array(byteChars.length);
+        for (let i = 0; i < byteChars.length; i++) byteArr[i] = byteChars.charCodeAt(i);
+        const blob = new Blob([byteArr], { type: mimeType });
 
-        // Try multiple free/cheap models that support audio
-        const audioModels = [
-          'google/gemini-2.0-flash-exp:free',
-          'google/gemini-2.5-flash-preview:free',
-          'google/gemini-flash-1.5-8b:free'
-        ];
+        // Determine file extension
+        const extMap = {'audio/mpeg':'mp3','audio/wav':'wav','audio/ogg':'ogg','audio/flac':'flac','audio/mp4':'m4a'};
+        const ext = extMap[mimeType] || 'mp3';
 
-        const errors = [];
-        for (const model of audioModels) {
-          try {
-            const res = await fetch(OPENROUTER_URL, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${OPENROUTER_KEY}`,
-                'HTTP-Referer': window.location.href,
-                'X-Title': 'MAVIS Call Analyzer'
-              },
-              body: JSON.stringify({
-                model,
-                messages: [{
-                  role: 'user',
-                  content: [
-                    { type: 'input_audio', input_audio: { data: audioBase64, format } },
-                    { type: 'text', text: 'Транскрибируй этот телефонный звонок на русском языке. Формат:\nМенеджер: ...\nКлиент: ...\nТочно передай содержание разговора.' }
-                  ]
-                }],
-                max_tokens: 8000
-              })
-            });
-            const data = await res.json();
-            if (data.error) { errors.push(model + ': ' + (data.error.message || JSON.stringify(data.error))); continue; }
-            const text = data.choices?.[0]?.message?.content || '';
-            if (text.length > 50) return text;
-            errors.push(model + ': ответ слишком короткий (' + text.length + ' симв.)');
-          } catch(e) { errors.push(model + ': ' + e.message); continue; }
-        }
+        const formData = new FormData();
+        formData.append('file', blob, `recording.${ext}`);
+        formData.append('model', 'whisper-large-v3');
+        formData.append('language', 'ru');
+        formData.append('response_format', 'verbose_json');
 
-        throw new Error('Шаг 3: Транскрибация не удалась. Детали: ' + errors.join(' | '));
+        const res = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${GROQ_KEY}` },
+          body: formData
+        });
+        const data = await res.json();
+        if (data.error) throw new Error('Шаг 3 (Groq): ' + (data.error.message || JSON.stringify(data.error)));
+        
+        const text = data.text || '';
+        if (text.length < 20) throw new Error('Шаг 3: Транскрибация слишком короткая (' + text.length + ' симв.). Возможно запись пустая.');
+        return text;
       }
 
       // PWA install prompt
@@ -650,8 +635,8 @@
             <div style={{background:'#fff',borderBottom:'1px solid #e2e8f0',padding:'14px 20px',animation:'fadeIn .2s'}}>
               <div style={{maxWidth:1100,margin:'0 auto',display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
                 <label style={{fontSize:12,fontWeight:600,color:'#64748b',whiteSpace:'nowrap'}}>Статус:</label>
-                <span style={{fontSize:12,color:'#16a34a',fontWeight:600}}>✓ OpenRouter (DeepSeek) — бесплатно</span>
-                <span style={{fontSize:11,color:'#64748b'}}>Транскрибация: Gemini | Анализ: DeepSeek</span>
+                <span style={{fontSize:12,color:'#16a34a',fontWeight:600}}>✓ Всё работает бесплатно</span>
+                <span style={{fontSize:11,color:'#64748b'}}>Транскрибация: Groq Whisper | Анализ: DeepSeek</span>
               </div>
             </div>
           )}
