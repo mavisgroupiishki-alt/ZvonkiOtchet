@@ -309,20 +309,18 @@
       const [apiKey] = useState(OPENROUTER_KEY);
       const [showSettings, setShowSettings] = useState(false);
 
-      // Helper for OpenRouter API calls
+      // Helper for AI text analysis via Groq (free)
       async function aiCall(userMessage, systemPrompt) {
         const messages = [];
         if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
         messages.push({ role: 'user', content: userMessage });
-        const res = await fetch(OPENROUTER_URL, {
+        const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${OPENROUTER_KEY}`,
-            'HTTP-Referer': window.location.href,
-            'X-Title': 'MAVIS Call Analyzer'
+            'Authorization': `Bearer ${GROQ_KEY}`
           },
-          body: JSON.stringify({ model: AI_MODEL, messages, max_tokens: 8000 })
+          body: JSON.stringify({ model: 'llama-3.3-70b-versatile', messages, max_tokens: 8000, temperature: 0.3 })
         });
         const data = await res.json();
         if (data.error) throw new Error(`AI: ${data.error.message || JSON.stringify(data.error)}`);
@@ -636,7 +634,7 @@
               <div style={{maxWidth:1100,margin:'0 auto',display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
                 <label style={{fontSize:12,fontWeight:600,color:'#64748b',whiteSpace:'nowrap'}}>Статус:</label>
                 <span style={{fontSize:12,color:'#16a34a',fontWeight:600}}>✓ Всё работает бесплатно</span>
-                <span style={{fontSize:11,color:'#64748b'}}>Транскрибация: Groq Whisper | Анализ: DeepSeek</span>
+                <span style={{fontSize:11,color:'#64748b'}}>Транскрибация: Groq Whisper | Анализ: Groq Llama 3.3 70B</span>
               </div>
             </div>
           )}
