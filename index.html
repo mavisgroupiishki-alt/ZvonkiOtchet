@@ -403,44 +403,49 @@
       const analyzeCall = useCallback(async (call) => {
         setAnalyzing(call.id); setError(null);
         try {
-          // Determine record URL
-          let recordUrl = call.recordUrl;
-          if (!recordUrl && call.recordFileId) {
+          // Step 1: Get download URL for the recording
+          let downloadUrl = call.recordUrl;
+          let fileName = '';
+          if (!downloadUrl && call.recordFileId) {
             setProgress('Получение ссылки на запись...');
-            recordUrl = await getRecordUrl(call.recordFileId);
+            try {
+              const fileInfo = await bx('disk.file.get', { id: call.recordFileId });
+              if (fileInfo.result?.DOWNLOAD_URL) {
+                downloadUrl = fileInfo.result.DOWNLOAD_URL;
+                fileName = fileInfo.result.NAME || '';
+              }
+            } catch(e) {}
           }
-          if (!recordUrl && !call.recordFileId) throw new Error('Нет аудиозаписи');
+          if (!downloadUrl) throw new Error('Нет аудиозаписи или не удалось получить ссылку');
 
-          setProgress('Загрузка записи...');
-          const audioResp = await fetch(recordUrl);
-          if (!audioResp.ok) throw new Error(`Не удалось скачать запись (${audioResp.status})`);
-          const blob = await audioResp.blob();
-          const b64 = await new Promise((res,rej) => {
-            const r = new FileReader();
-            r.onload = () => res(r.result.split(',')[1]);
-            r.onerror = rej; r.readAsDataURL(blob);
-          });
-
+          // Step 2: Determine media type from filename
           let mediaType = 'audio/mpeg';
-          const ct = blob.type || '';
-          if (ct.includes('wav') || (recordUrl && recordUrl.includes('.wav'))) mediaType = 'audio/wav';
-          else if (ct.includes('ogg') || (recordUrl && recordUrl.includes('.ogg'))) mediaType = 'audio/ogg';
-          else if (ct.includes('mp4') || ct.includes('m4a')) mediaType = 'audio/mp4';
+          const fn = (fileName || downloadUrl || '').toLowerCase();
+          if (fn.includes('.wav')) mediaType = 'audio/wav';
+          else if (fn.includes('.ogg')) mediaType = 'audio/ogg';
+          else if (fn.includes('.m4a') || fn.includes('.mp4')) mediaType = 'audio/mp4';
 
-          setProgress('Транскрибация...');
+          // Step 3: Transcribe using URL source
+          setProgress('Транскрибация аудио...');
           const trRes = await fetch(ANTHROPIC_URL, {
             method: 'POST', headers: {'Content-Type':'application/json'},
             body: JSON.stringify({
               model: MODEL, max_tokens: 8000,
               messages: [{role:'user', content:[
-                {type:'document', source:{type:'base64', media_type:mediaType, data:b64}},
-                {type:'text', text:'Транскрибируй этот телефонный звонок. Формат:\nМенеджер: ...\nКлиент: ...\nТочно передай содержание.'}
+                {type:'document', source:{type:'url', url: downloadUrl}},
+                {type:'text', text:'Транскрибируй этот телефонный звонок. Формат:\nМенеджер: ...\nКлиент: ...\nТочно передай содержание разговора.'}
               ]}]
             })
           });
           const trData = await trRes.json();
+          
+          // Check for API errors
+          if (trData.error) {
+            throw new Error(`AI ошибка: ${trData.error.message || trData.error.type || 'неизвестная'}`);
+          }
+          
           const transcription = trData.content?.map(c=>c.text||'').join('\n') || '';
-          if (transcription.length < 50) throw new Error('Не удалось транскрибировать аудио');
+          if (transcription.length < 50) throw new Error('Не удалось транскрибировать аудио. Возможно файл повреждён.');
 
           // Get CRM context
           let funnelName = 'Не определена', dealStage = 'Не определена';
