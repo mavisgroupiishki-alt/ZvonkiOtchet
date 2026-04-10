@@ -50,9 +50,10 @@ const{useState,useEffect,useCallback,useRef}=React;
 const BX="https://mavisgroup.bitrix24.by/rest/2110/41rkgwpt4dp17ubj";
 const GROQ="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";
 const STAFF=[
-  {id:"2110",name:"Авсеенко Роман"},
-  {id:"44",name:"Халько Екатерина"},
-  {id:"0",name:"Богвольцева Ирина"}
+  {id:"1286",name:"Авсеенко Роман"},
+  {id:"2154",name:"Халько Екатерина"},
+  {id:"2100",name:"Богомольцева Ирина"},
+  {id:"2110",name:"Ренейская Алиса"}
 ];
 
 // ═══ SYSTEM PROMPT ═══
@@ -529,7 +530,14 @@ function App(){
 ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
 </script>
 <script>
-if('serviceWorker' in navigator){window.addEventListener('load',()=>{navigator.serviceWorker.register('./sw.js').catch(()=>{})})}
+// Clear old caches and re-register SW
+if('serviceWorker' in navigator){
+  window.addEventListener('load',async()=>{
+    // Clear all caches first
+    if(window.caches){const keys=await caches.keys();await Promise.all(keys.map(k=>caches.delete(k)))}
+    navigator.serviceWorker.register('./sw.js').catch(()=>{});
+  });
+}
 </script>
 </body>
 </html>
