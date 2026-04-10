@@ -132,13 +132,31 @@ function CriteriaBar({criteria}){
 // ═══ TRANSCRIPT MODAL ═══
 function TranscriptModal({text,onClose}){
   if(!text)return null;
+  // Parse lines and colorize roles
+  const lines=text.split('\n').filter(l=>l.trim());
   return <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,.4)',zIndex:1001,display:'flex',alignItems:'center',justifyContent:'center',padding:16}} onClick={onClose}>
     <div style={{background:'#fff',borderRadius:16,maxWidth:700,width:'100%',maxHeight:'85vh',overflow:'auto',padding:28,animation:'slideUp .3s'}} onClick={e=>e.stopPropagation()}>
       <div style={{display:'flex',justifyContent:'space-between',marginBottom:16}}>
         <h3 style={{fontSize:16,fontWeight:700}}>Транскрибация звонка</h3>
         <button onClick={onClose} style={{background:'none',border:'none',fontSize:20,cursor:'pointer',color:'#9ca3af'}}>✕</button>
       </div>
-      <pre style={{whiteSpace:'pre-wrap',wordBreak:'break-word',fontSize:13,lineHeight:1.7,color:'#374151',fontFamily:'Inter,sans-serif'}}>{text}</pre>
+      <div style={{display:'flex',flexDirection:'column',gap:8}}>
+        {lines.map((line,i)=>{
+          const colonIdx=line.indexOf(':');
+          if(colonIdx>0&&colonIdx<40){
+            const speaker=line.substring(0,colonIdx).trim();
+            const msg=line.substring(colonIdx+1).trim();
+            const isManager=STAFF.some(s=>speaker.includes(s.name.split(' ').pop()));
+            return <div key={i} style={{display:'flex',gap:8,alignItems:'flex-start'}}>
+              <div style={{flexShrink:0,padding:'3px 8px',borderRadius:6,fontSize:11,fontWeight:700,marginTop:1,
+                background:isManager?'#dbeafe':'#fef3c7',color:isManager?'#1e40af':'#92400e',minWidth:60,textAlign:'center'
+              }}>{speaker}</div>
+              <div style={{fontSize:13,color:'#374151',lineHeight:1.6}}>{msg}</div>
+            </div>;
+          }
+          return <div key={i} style={{fontSize:13,color:'#6b7280',lineHeight:1.6,paddingLeft:8}}>{line}</div>;
+        })}
+      </div>
     </div>
   </div>;
 }
@@ -246,7 +264,8 @@ function App(){
   },[dateFrom,dateTo,selEmp]);
 
   // ── Single call analysis ──
-  async function doAnalyze(call){
+  async function doAnalyze(call, progressCb){
+    if(progressCb) progressCb('Получение ссылки на запись...');
     let downloadUrl=call.recordUrl,fileName='';
     if(!downloadUrl&&call.recordFileId){
       const fi=await bx('disk.file.get',{id:call.recordFileId});
@@ -254,6 +273,23 @@ function App(){
     }
     if(!downloadUrl)throw new Error('Нет записи');
 
+    // Get CRM contact/lead name
+    if(progressCb) progressCb('Загрузка информации о клиенте...');
+    let clientName='Клиент', clientCompany='';
+    try{
+      if(call.crmType==='CONTACT'&&call.crmId){
+        const cr=await bx('crm.contact.get',{id:call.crmId});
+        if(cr.result){clientName=`${cr.result.NAME||''} ${cr.result.LAST_NAME||''}`.trim()||'Клиент';
+          if(cr.result.COMPANY_ID){try{const co=await bx('crm.company.get',{id:cr.result.COMPANY_ID});clientCompany=co.result?.TITLE||''}catch{}}
+        }
+      }else if(call.crmType==='LEAD'&&call.crmId){
+        const lr=await bx('crm.lead.get',{id:call.crmId});
+        if(lr.result){clientName=`${lr.result.NAME||''} ${lr.result.LAST_NAME||''}`.trim()||'Клиент';clientCompany=lr.result.COMPANY_TITLE||''}
+      }
+    }catch{}
+    const clientLabel=clientCompany?`${clientName} (${clientCompany})`:clientName;
+
+    if(progressCb) progressCb('Загрузка аудио...');
     const audioResp=await fetch(downloadUrl);
     if(!audioResp.ok)throw new Error(`Загрузка: ${audioResp.status}`);
     const blob=await audioResp.blob();
@@ -262,14 +298,34 @@ function App(){
     let mime='audio/mpeg';const fn=(fileName||downloadUrl||'').toLowerCase();
     if(fn.includes('.wav'))mime='audio/wav';else if(fn.includes('.ogg'))mime='audio/ogg';
 
-    const transcription=await groqTranscribe(b64,mime);
-    if(transcription.length<20)throw new Error('Транскрибация пустая');
+    if(progressCb) progressCb('Транскрибация аудио...');
+    const rawTranscription=await groqTranscribe(b64,mime);
+    if(rawTranscription.length<20)throw new Error('Транскрибация пустая');
 
-    // Wait 2s to avoid Groq rate limiting between whisper and chat
+    // Wait to avoid rate limiting
     await new Promise(r=>setTimeout(r,2000));
 
+    // Reformat transcript with roles
+    if(progressCb) progressCb('Разметка по ролям...');
+    const managerFirstName=call.empName.split(' ').pop()||call.empName;
+    const transcription=await groqChat(
+      `Вот транскрибация телефонного звонка между менеджером "${managerFirstName}" и клиентом "${clientLabel}".
+Раздели текст по ролям. Определи кто менеджер, кто клиент по контексту разговора (менеджер представляется от компании Мавис Групп, предлагает услуги).
+Формат ответа — ТОЛЬКО размеченный диалог, без пояснений:
+
+${managerFirstName}: текст реплики менеджера
+${clientLabel}: текст реплики клиента
+
+Вот транскрибация:
+${rawTranscription}`,
+      'Ты размечаешь транскрибации звонков по ролям. Отвечай ТОЛЬКО размеченным диалогом, без пояснений и комментариев.'
+    );
+
+    await new Promise(r=>setTimeout(r,2000));
+
+    if(progressCb) progressCb('Анализ по критериям...');
     const anText=await groqChat(
-      `Проанализируй транскрибацию звонка.\nДата: ${fmtDT(call.date)}\nМенеджер: ${call.empName}\n\n---\n${transcription}\n---`,SYS
+      `Проанализируй транскрибацию звонка.\nДата: ${fmtDT(call.date)}\nМенеджер: ${call.empName}\nКлиент: ${clientLabel}\n\n---\n${transcription}\n---`,SYS
     );
     const m=anText.match(/\{[\s\S]*\}/);
     const parsed=JSON.parse(m?m[0]:anText);
@@ -283,9 +339,9 @@ function App(){
   }
 
   const analyzeCall=useCallback(async(call)=>{
-    setAnalyzing(call.id);setError(null);setProgress('Анализ звонка...');
+    setAnalyzing(call.id);setError(null);
     try{
-      const result=await doAnalyze(call);
+      const result=await doAnalyze(call, msg=>setProgress(msg));
       setAnalyses(prev=>[result,...prev]);
     }catch(e){setError(e.message)}
     setProgress('');setAnalyzing(null);
