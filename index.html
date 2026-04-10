@@ -99,8 +99,7 @@
     // CONFIG
     // ═══════════════════════════════════════
     const BITRIX_BASE = "https://mavisgroup.bitrix24.by/rest/2110/41rkgwpt4dp17ubj";
-    const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
-    const MODEL = "claude-sonnet-4-20250514";
+    const GEMINI_MODEL = "gemini-2.5-flash-preview-05-20";
 
     // ═══════════════════════════════════════
     // SYSTEM PROMPT
@@ -304,6 +303,33 @@
       const [progress, setProgress] = useState('');
       const [installPrompt, setInstallPrompt] = useState(null);
       const [showInstall, setShowInstall] = useState(false);
+      const [apiKey, setApiKey] = useState(() => localStorage.getItem('mavis_gemini_key') || 'AIzaSyD8Lx157MUzg1Us6pvCh-bikkcE27jFkzI');
+      const [showSettings, setShowSettings] = useState(false);
+
+      // Save API key
+      useEffect(() => { if(apiKey) localStorage.setItem('mavis_gemini_key', apiKey); }, [apiKey]);
+
+      // Helper for Gemini API calls
+      async function geminiCall(parts, systemInstruction) {
+        if (!apiKey) throw new Error('Введите Gemini API ключ в настройках (⚙). Получить бесплатно: aistudio.google.com/apikey');
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
+        const body = {
+          contents: [{ role: 'user', parts }],
+          generationConfig: { maxOutputTokens: 8192 }
+        };
+        if (systemInstruction) {
+          body.systemInstruction = { parts: [{ text: systemInstruction }] };
+        }
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (data.error) throw new Error(`Gemini: ${data.error.message || data.error.status}`);
+        const text = data.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '';
+        return text;
+      }
 
       // PWA install prompt
       useEffect(() => {
@@ -418,36 +444,34 @@
           }
           if (!downloadUrl) throw new Error('Нет аудиозаписи или не удалось получить ссылку');
 
-          // Step 2: Determine media type from filename
-          let mediaType = 'audio/mpeg';
-          const fn = (fileName || downloadUrl || '').toLowerCase();
-          if (fn.includes('.wav')) mediaType = 'audio/wav';
-          else if (fn.includes('.ogg')) mediaType = 'audio/ogg';
-          else if (fn.includes('.m4a') || fn.includes('.mp4')) mediaType = 'audio/mp4';
-
-          // Step 3: Transcribe using URL source
-          setProgress('Транскрибация аудио...');
-          const trRes = await fetch(ANTHROPIC_URL, {
-            method: 'POST', headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({
-              model: MODEL, max_tokens: 8000,
-              messages: [{role:'user', content:[
-                {type:'document', source:{type:'url', url: downloadUrl}},
-                {type:'text', text:'Транскрибируй этот телефонный звонок. Формат:\nМенеджер: ...\nКлиент: ...\nТочно передай содержание разговора.'}
-              ]}]
-            })
+          // Step 2: Download the audio file as base64
+          setProgress('Загрузка записи...');
+          const audioResp = await fetch(downloadUrl);
+          if (!audioResp.ok) throw new Error(`Ошибка загрузки записи (${audioResp.status})`);
+          const blob = await audioResp.blob();
+          const b64 = await new Promise((res,rej) => {
+            const r = new FileReader();
+            r.onload = () => res(r.result.split(',')[1]);
+            r.onerror = rej; r.readAsDataURL(blob);
           });
-          const trData = await trRes.json();
-          
-          // Check for API errors
-          if (trData.error) {
-            throw new Error(`AI ошибка: ${trData.error.message || trData.error.type || 'неизвестная'}`);
-          }
-          
-          const transcription = trData.content?.map(c=>c.text||'').join('\n') || '';
-          if (transcription.length < 50) throw new Error('Не удалось транскрибировать аудио. Возможно файл повреждён.');
 
-          // Get CRM context
+          // Determine media type
+          let mimeType = 'audio/mpeg';
+          const fn = (fileName || downloadUrl || '').toLowerCase();
+          if (fn.includes('.wav')) mimeType = 'audio/wav';
+          else if (fn.includes('.ogg')) mimeType = 'audio/ogg';
+          else if (fn.includes('.m4a')) mimeType = 'audio/mp4';
+          else if (fn.includes('.flac')) mimeType = 'audio/flac';
+
+          // Step 3: Transcribe with Gemini
+          setProgress('Транскрибация аудио...');
+          const transcription = await geminiCall([
+            { inlineData: { mimeType, data: b64 } },
+            { text: 'Транскрибируй этот телефонный звонок. Формат:\nМенеджер: ...\nКлиент: ...\nТочно передай содержание разговора.' }
+          ]);
+          if (transcription.length < 50) throw new Error('Не удалось транскрибировать аудио.');
+
+          // Step 4: Get CRM context
           let funnelName = 'Не определена', dealStage = 'Не определена';
           if (call.crmType === 'DEAL' && call.crmId) {
             try {
@@ -462,22 +486,18 @@
             } catch {}
           }
 
+          // Step 5: Analyze with Gemini
           setProgress('Анализ по критериям...');
-          const anRes = await fetch(ANTHROPIC_URL, {
-            method: 'POST', headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({
-              model: MODEL, max_tokens: 4000, system: SYSTEM_PROMPT,
-              messages: [{role:'user', content:`Проанализируй транскрибацию звонка.\nВоронка: ${funnelName}\nСтадия: ${dealStage}\nДата: ${fmtDT(call.date)}\nМенеджер: ${call.empName}\n\n---\n${transcription}\n---`}]
-            })
-          });
-          const anData = await anRes.json();
-          const anText = anData.content?.map(c=>c.text||'').join('') || '';
+          const anText = await geminiCall(
+            [{ text: `Проанализируй транскрибацию звонка.\nВоронка: ${funnelName}\nСтадия: ${dealStage}\nДата: ${fmtDT(call.date)}\nМенеджер: ${call.empName}\n\n---\n${transcription}\n---` }],
+            SYSTEM_PROMPT
+          );
 
           let parsed;
           try {
             const m = anText.match(/\{[\s\S]*\}/);
             parsed = JSON.parse(m ? m[0] : anText);
-          } catch { throw new Error('Не удалось разобрать ответ AI'); }
+          } catch { throw new Error('Не удалось разобрать ответ AI. Попробуйте ещё раз.'); }
 
           const newA = {
             id: `${call.id}_${Date.now()}`, callId: call.id, callDate: call.date,
@@ -488,7 +508,7 @@
           setAnalyses(prev => [newA, ...prev]);
         } catch(e) { setError(e.message); }
         setProgress(''); setAnalyzing(null);
-      }, [funnels]);
+      }, [funnels, apiKey]);
 
       // Report helpers
       const getFiltered = () => analyses.filter(a => {
@@ -575,7 +595,27 @@
               {navBtn('reports','📊','Отчёты')}
               {navBtn('history','📋','История')}
             </div>
+            <button onClick={()=>setShowSettings(!showSettings)} style={{
+              width:36,height:36,borderRadius:10,border:'1.5px solid #e2e8f0',background:apiKey?'#f0fdf4':'#fef2f2',
+              display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',fontSize:16,
+              color:apiKey?'#16a34a':'#dc2626',flexShrink:0
+            }} title="Настройки API ключа">{apiKey?'⚙':'🔑'}</button>
           </div>
+
+          {/* Settings panel */}
+          {showSettings && (
+            <div style={{background:'#fff',borderBottom:'1px solid #e2e8f0',padding:'14px 20px',animation:'fadeIn .2s'}}>
+              <div style={{maxWidth:1100,margin:'0 auto',display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+                <label style={{fontSize:12,fontWeight:600,color:'#64748b',whiteSpace:'nowrap'}}>Gemini API ключ:</label>
+                <input type="password" value={apiKey} onChange={e=>setApiKey(e.target.value)}
+                  placeholder="AIzaSy..."
+                  style={{flex:1,minWidth:200,padding:'8px 12px',borderRadius:8,border:'1.5px solid #e2e8f0',fontSize:13,fontFamily:'monospace'}}/>
+                <span style={{fontSize:11,color:apiKey?'#16a34a':'#dc2626',fontWeight:600}}>{apiKey?'✓ Ключ сохранён':'✕ Нужен ключ'}</span>
+                <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener"
+                  style={{fontSize:11,color:'#3b82f6',textDecoration:'none'}}>Получить бесплатно →</a>
+              </div>
+            </div>
+          )}
 
           <div style={{padding:'16px 16px 0',maxWidth:1100,margin:'0 auto'}}>
             {/* Errors & progress */}
