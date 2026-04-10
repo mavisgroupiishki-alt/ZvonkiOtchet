@@ -341,6 +341,7 @@
           'google/gemini-flash-1.5-8b:free'
         ];
 
+        const errors = [];
         for (const model of audioModels) {
           try {
             const res = await fetch(OPENROUTER_URL, {
@@ -364,13 +365,14 @@
               })
             });
             const data = await res.json();
-            if (data.error) continue; // try next model
+            if (data.error) { errors.push(model + ': ' + (data.error.message || JSON.stringify(data.error))); continue; }
             const text = data.choices?.[0]?.message?.content || '';
             if (text.length > 50) return text;
-          } catch(e) { continue; }
+            errors.push(model + ': ответ слишком короткий (' + text.length + ' симв.)');
+          } catch(e) { errors.push(model + ': ' + e.message); continue; }
         }
 
-        throw new Error('Не удалось транскрибировать аудио. Все модели недоступны. Попробуйте позже.');
+        throw new Error('Шаг 3: Транскрибация не удалась. Детали: ' + errors.join(' | '));
       }
 
       // PWA install prompt
@@ -482,29 +484,34 @@
                 downloadUrl = fileInfo.result.DOWNLOAD_URL;
                 fileName = fileInfo.result.NAME || '';
               }
-            } catch(e) {}
+            } catch(e) {
+              throw new Error('Шаг 1: Не удалось получить ссылку на файл из Bitrix: ' + e.message);
+            }
           }
-          if (!downloadUrl) throw new Error('Нет аудиозаписи');
+          if (!downloadUrl) throw new Error('Шаг 1: Нет аудиозаписи или ссылки');
 
           // Step 2: Download audio as base64
-          setProgress('Загрузка записи...');
-          const audioResp = await fetch(downloadUrl);
-          if (!audioResp.ok) throw new Error(`Ошибка загрузки (${audioResp.status})`);
-          const blob = await audioResp.blob();
-          const b64 = await new Promise((res,rej) => {
-            const r = new FileReader();
-            r.onload = () => res(r.result.split(',')[1]);
-            r.onerror = rej; r.readAsDataURL(blob);
-          });
+          setProgress('Загрузка записи (' + (fileName || 'аудио') + ')...');
+          let b64, mimeType = 'audio/mpeg';
+          try {
+            const audioResp = await fetch(downloadUrl);
+            if (!audioResp.ok) throw new Error(`HTTP ${audioResp.status}`);
+            const blob = await audioResp.blob();
+            b64 = await new Promise((res,rej) => {
+              const r = new FileReader();
+              r.onload = () => res(r.result.split(',')[1]);
+              r.onerror = rej; r.readAsDataURL(blob);
+            });
+            const fn = (fileName || downloadUrl || '').toLowerCase();
+            if (fn.includes('.wav')) mimeType = 'audio/wav';
+            else if (fn.includes('.ogg')) mimeType = 'audio/ogg';
+            else if (fn.includes('.flac')) mimeType = 'audio/flac';
+          } catch(e) {
+            throw new Error('Шаг 2: Ошибка скачивания записи: ' + e.message + '. URL: ' + downloadUrl.substring(0, 80) + '...');
+          }
 
-          let mimeType = 'audio/mpeg';
-          const fn = (fileName || downloadUrl || '').toLowerCase();
-          if (fn.includes('.wav')) mimeType = 'audio/wav';
-          else if (fn.includes('.ogg')) mimeType = 'audio/ogg';
-          else if (fn.includes('.flac')) mimeType = 'audio/flac';
-
-          // Step 3: Transcribe via Gemini (free, supports audio)
-          setProgress('Транскрибация аудио...');
+          // Step 3: Transcribe via OpenRouter
+          setProgress('Транскрибация аудио (размер: ' + Math.round(b64.length/1024) + ' KB)...');
           const transcription = await transcribeAudio(b64, mimeType);
 
           // Step 4: Get CRM context
@@ -522,7 +529,7 @@
             } catch {}
           }
 
-          // Step 5: Analyze with DeepSeek via OpenRouter (free)
+          // Step 5: Analyze with DeepSeek via OpenRouter
           setProgress('Анализ по критериям...');
           const anText = await aiCall(
             `Проанализируй транскрибацию звонка.\nВоронка: ${funnelName}\nСтадия: ${dealStage}\nДата: ${fmtDT(call.date)}\nМенеджер: ${call.empName}\n\n---\n${transcription}\n---`,
@@ -533,7 +540,7 @@
           try {
             const m = anText.match(/\{[\s\S]*\}/);
             parsed = JSON.parse(m ? m[0] : anText);
-          } catch { throw new Error('Не удалось разобрать ответ AI. Попробуйте ещё раз.'); }
+          } catch { throw new Error('Шаг 5: Не удалось разобрать JSON ответ AI. Попробуйте ещё раз.'); }
 
           const newA = {
             id: `${call.id}_${Date.now()}`, callId: call.id, callDate: call.date,
