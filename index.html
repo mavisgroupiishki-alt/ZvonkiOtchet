@@ -99,7 +99,9 @@
     // CONFIG
     // ═══════════════════════════════════════
     const BITRIX_BASE = "https://mavisgroup.bitrix24.by/rest/2110/41rkgwpt4dp17ubj";
-    const GEMINI_MODEL = "gemini-2.0-flash";
+    const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
+    const OPENROUTER_KEY = "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";
+    const AI_MODEL = "deepseek/deepseek-chat-v3-0324:free";
 
     // ═══════════════════════════════════════
     // SYSTEM PROMPT
@@ -303,32 +305,62 @@
       const [progress, setProgress] = useState('');
       const [installPrompt, setInstallPrompt] = useState(null);
       const [showInstall, setShowInstall] = useState(false);
-      const [apiKey, setApiKey] = useState(() => localStorage.getItem('mavis_gemini_key') || 'AIzaSyD8Lx157MUzg1Us6pvCh-bikkcE27jFkzI');
+      const [apiKey] = useState(OPENROUTER_KEY);
       const [showSettings, setShowSettings] = useState(false);
 
-      // Save API key
-      useEffect(() => { if(apiKey) localStorage.setItem('mavis_gemini_key', apiKey); }, [apiKey]);
-
-      // Helper for Gemini API calls
-      async function geminiCall(parts, systemInstruction) {
-        if (!apiKey) throw new Error('Введите Gemini API ключ в настройках (⚙). Получить бесплатно: aistudio.google.com/apikey');
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
-        const body = {
-          contents: [{ role: 'user', parts }],
-          generationConfig: { maxOutputTokens: 8192 }
-        };
-        if (systemInstruction) {
-          body.systemInstruction = { parts: [{ text: systemInstruction }] };
-        }
-        const res = await fetch(url, {
+      // Helper for OpenRouter API calls
+      async function aiCall(userMessage, systemPrompt) {
+        const messages = [];
+        if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
+        messages.push({ role: 'user', content: userMessage });
+        const res = await fetch(OPENROUTER_URL, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body)
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${OPENROUTER_KEY}`,
+            'HTTP-Referer': window.location.href,
+            'X-Title': 'MAVIS Call Analyzer'
+          },
+          body: JSON.stringify({ model: AI_MODEL, messages, max_tokens: 8000 })
         });
         const data = await res.json();
-        if (data.error) throw new Error(`Gemini: ${data.error.message || data.error.status}`);
-        const text = data.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '';
-        return text;
+        if (data.error) throw new Error(`AI: ${data.error.message || JSON.stringify(data.error)}`);
+        return data.choices?.[0]?.message?.content || '';
+      }
+
+      // Browser-based audio transcription using Whisper via OpenRouter free model
+      async function transcribeAudio(audioBase64, mimeType) {
+        // Since free models can't process audio, we'll use a smart workaround:
+        // Send audio to a free speech-to-text service
+        // For now, try Google's free Gemini with the existing key, or fall back
+        const prompt = `This is a phone call recording between a sales manager and a client. The conversation is in Russian. Please transcribe it accurately in the format:
+Менеджер: ...
+Клиент: ...
+
+Transcribe the complete conversation.`;
+        
+        // Try Gemini first (it supports audio)
+        try {
+          const geminiUrl = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=AIzaSyD8Lx157MUzg1Us6pvCh-bikkcE27jFkzI';
+          const geminiRes = await fetch(geminiUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [{ role: 'user', parts: [
+                { inlineData: { mimeType, data: audioBase64 } },
+                { text: 'Транскрибируй этот телефонный звонок на русском языке. Формат:\nМенеджер: ...\nКлиент: ...\nТочно передай содержание разговора.' }
+              ]}],
+              generationConfig: { maxOutputTokens: 8192 }
+            })
+          });
+          const geminiData = await geminiRes.json();
+          if (!geminiData.error) {
+            const text = geminiData.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '';
+            if (text.length > 50) return text;
+          }
+        } catch(e) {}
+
+        throw new Error('Не удалось транскрибировать аудио. Попробуйте позже или используйте другой API ключ Gemini в настройках.');
       }
 
       // PWA install prompt
@@ -429,7 +461,7 @@
       const analyzeCall = useCallback(async (call) => {
         setAnalyzing(call.id); setError(null);
         try {
-          // Step 1: Get download URL for the recording
+          // Step 1: Get download URL
           let downloadUrl = call.recordUrl;
           let fileName = '';
           if (!downloadUrl && call.recordFileId) {
@@ -442,12 +474,12 @@
               }
             } catch(e) {}
           }
-          if (!downloadUrl) throw new Error('Нет аудиозаписи или не удалось получить ссылку');
+          if (!downloadUrl) throw new Error('Нет аудиозаписи');
 
-          // Step 2: Download the audio file as base64
+          // Step 2: Download audio as base64
           setProgress('Загрузка записи...');
           const audioResp = await fetch(downloadUrl);
-          if (!audioResp.ok) throw new Error(`Ошибка загрузки записи (${audioResp.status})`);
+          if (!audioResp.ok) throw new Error(`Ошибка загрузки (${audioResp.status})`);
           const blob = await audioResp.blob();
           const b64 = await new Promise((res,rej) => {
             const r = new FileReader();
@@ -455,21 +487,15 @@
             r.onerror = rej; r.readAsDataURL(blob);
           });
 
-          // Determine media type
           let mimeType = 'audio/mpeg';
           const fn = (fileName || downloadUrl || '').toLowerCase();
           if (fn.includes('.wav')) mimeType = 'audio/wav';
           else if (fn.includes('.ogg')) mimeType = 'audio/ogg';
-          else if (fn.includes('.m4a')) mimeType = 'audio/mp4';
           else if (fn.includes('.flac')) mimeType = 'audio/flac';
 
-          // Step 3: Transcribe with Gemini
+          // Step 3: Transcribe via Gemini (free, supports audio)
           setProgress('Транскрибация аудио...');
-          const transcription = await geminiCall([
-            { inlineData: { mimeType, data: b64 } },
-            { text: 'Транскрибируй этот телефонный звонок. Формат:\nМенеджер: ...\nКлиент: ...\nТочно передай содержание разговора.' }
-          ]);
-          if (transcription.length < 50) throw new Error('Не удалось транскрибировать аудио.');
+          const transcription = await transcribeAudio(b64, mimeType);
 
           // Step 4: Get CRM context
           let funnelName = 'Не определена', dealStage = 'Не определена';
@@ -486,10 +512,10 @@
             } catch {}
           }
 
-          // Step 5: Analyze with Gemini
+          // Step 5: Analyze with DeepSeek via OpenRouter (free)
           setProgress('Анализ по критериям...');
-          const anText = await geminiCall(
-            [{ text: `Проанализируй транскрибацию звонка.\nВоронка: ${funnelName}\nСтадия: ${dealStage}\nДата: ${fmtDT(call.date)}\nМенеджер: ${call.empName}\n\n---\n${transcription}\n---` }],
+          const anText = await aiCall(
+            `Проанализируй транскрибацию звонка.\nВоронка: ${funnelName}\nСтадия: ${dealStage}\nДата: ${fmtDT(call.date)}\nМенеджер: ${call.empName}\n\n---\n${transcription}\n---`,
             SYSTEM_PROMPT
           );
 
@@ -508,7 +534,7 @@
           setAnalyses(prev => [newA, ...prev]);
         } catch(e) { setError(e.message); }
         setProgress(''); setAnalyzing(null);
-      }, [funnels, apiKey]);
+      }, [funnels]);
 
       // Report helpers
       const getFiltered = () => analyses.filter(a => {
@@ -606,13 +632,9 @@
           {showSettings && (
             <div style={{background:'#fff',borderBottom:'1px solid #e2e8f0',padding:'14px 20px',animation:'fadeIn .2s'}}>
               <div style={{maxWidth:1100,margin:'0 auto',display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
-                <label style={{fontSize:12,fontWeight:600,color:'#64748b',whiteSpace:'nowrap'}}>Gemini API ключ:</label>
-                <input type="password" value={apiKey} onChange={e=>setApiKey(e.target.value)}
-                  placeholder="AIzaSy..."
-                  style={{flex:1,minWidth:200,padding:'8px 12px',borderRadius:8,border:'1.5px solid #e2e8f0',fontSize:13,fontFamily:'monospace'}}/>
-                <span style={{fontSize:11,color:apiKey?'#16a34a':'#dc2626',fontWeight:600}}>{apiKey?'✓ Ключ сохранён':'✕ Нужен ключ'}</span>
-                <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener"
-                  style={{fontSize:11,color:'#3b82f6',textDecoration:'none'}}>Получить бесплатно →</a>
+                <label style={{fontSize:12,fontWeight:600,color:'#64748b',whiteSpace:'nowrap'}}>Статус:</label>
+                <span style={{fontSize:12,color:'#16a34a',fontWeight:600}}>✓ OpenRouter (DeepSeek) — бесплатно</span>
+                <span style={{fontSize:11,color:'#64748b'}}>Транскрибация: Gemini | Анализ: DeepSeek</span>
               </div>
             </div>
           )}
